@@ -34,6 +34,7 @@ State.TouchFling      = State.TouchFling or false
 State.InfJump         = State.InfJump or false
 State.AutoCollectDF   = State.AutoCollectDF or false
 State.BringMobs       = State.BringMobs or false
+State.SelectedQuest   = State.SelectedQuest or nil
 
 -- ==================== HELPERS ====================
 local function getCharacter()
@@ -55,6 +56,24 @@ local function teleportTo(cframe)
     if hrp then
         hrp.CFrame = cframe
     end
+end
+
+-- Check if a model is a quest/shop NPC (not a combat mob)
+local function isQuestNPC(model)
+    if not model then return false end
+    local nameL = string.lower(model.Name)
+    -- Quest givers, shops, dealers, trainers, etc.
+    local questKeywords = {"quest", "giver", "npc", "dealer", "shop", "trainer", "crafter", "enchant", "storage", "portal", "merchant", "vendor", "haki", "master", "elder"}
+    for _, keyword in pairs(questKeywords) do
+        if string.find(nameL, keyword) then return true end
+    end
+    -- Also check if it has ProximityPrompt or ClickDetector (interactive NPC, not a mob)
+    for _, child in pairs(model:GetDescendants()) do
+        if child:IsA("ProximityPrompt") or child:IsA("ClickDetector") then
+            return true
+        end
+    end
+    return false
 end
 
 local function getNearestNPC(maxDist, filter)
@@ -82,6 +101,66 @@ local function getNearestNPC(maxDist, filter)
         end
     end
     return nearest
+end
+
+-- ==================== QUEST PROGRESSION TABLE ====================
+-- Level-based quest data for Sailor Piece
+local QuestTable = {
+    {minLvl = 0,     maxLvl = 99,    questName = "Thief Hunter",        mobName = "thief",           island = "Starter Island"},
+    {minLvl = 100,   maxLvl = 249,   questName = "Thief Boss",          mobName = "thief boss",      island = "Starter Island"},
+    {minLvl = 250,   maxLvl = 499,   questName = "Monkey Hunter",       mobName = "monkey",          island = "Jungle Island"},
+    {minLvl = 500,   maxLvl = 749,   questName = "Monkey Boss",         mobName = "monkey boss",     island = "Jungle Island"},
+    {minLvl = 750,   maxLvl = 999,   questName = "Desert Bandit",       mobName = "bandit",          island = "Desert Island"},
+    {minLvl = 1000,  maxLvl = 1499,  questName = "Desert Bandit Boss",  mobName = "bandit boss",     island = "Desert Island"},
+    {minLvl = 1500,  maxLvl = 1999,  questName = "Frost Rogue Hunter",  mobName = "frost",           island = "Snow Island"},
+    {minLvl = 2000,  maxLvl = 2999,  questName = "Winter Warden Boss",  mobName = "warden",          island = "Snow Island"},
+    {minLvl = 3000,  maxLvl = 3999,  questName = "Sorcerer Hunter",     mobName = "sorcerer",        island = "Shibuya Station"},
+    {minLvl = 4000,  maxLvl = 4999,  questName = "Panda Sorcerer Boss", mobName = "panda",           island = "Shibuya Station"},
+    {minLvl = 5000,  maxLvl = 6249,  questName = "Hollow Hunter",       mobName = "hollow",          island = "Hueco Mundo"},
+    {minLvl = 6250,  maxLvl = 6999,  questName = "Strong Sorcerer",     mobName = "strong sorcerer", island = "Shinjuku Island"},
+    {minLvl = 7000,  maxLvl = 7999,  questName = "Curse Hunter",        mobName = "curse",           island = "Shinjuku Island"},
+    {minLvl = 8000,  maxLvl = 8999,  questName = "Slime Warrior",       mobName = "slime",           island = "Slime Island"},
+    {minLvl = 9000,  maxLvl = 9999,  questName = "Academy Challenge",   mobName = "academy",         island = "Academy Island"},
+    {minLvl = 10000, maxLvl = 10749, questName = "Blade Masters",       mobName = "blade",           island = "Judgement Island"},
+    {minLvl = 10750, maxLvl = 11499, questName = "Quincy Quest",        mobName = "quincy",          island = "Soul Society"},
+    {minLvl = 11500, maxLvl = 11999, questName = "Ninja Slayer",        mobName = "ninja",           island = "Ninja Island"},
+    {minLvl = 12000, maxLvl = 99999, questName = "Arena Takedown",      mobName = "arena",           island = "Lawless Island"},
+}
+
+-- Get the player's current level
+local function getPlayerLevel()
+    local level = 0
+    pcall(function()
+        -- Try common level storage locations
+        local stats = LocalPlayer:FindFirstChild("leaderstats") or LocalPlayer:FindFirstChild("Stats") or LocalPlayer:FindFirstChild("stats")
+        if stats then
+            local lvlVal = stats:FindFirstChild("Level") or stats:FindFirstChild("Lvl") or stats:FindFirstChild("level")
+            if lvlVal then
+                level = tonumber(lvlVal.Value) or 0
+            end
+        end
+        -- Also try Data folder
+        if level == 0 then
+            local data = LocalPlayer:FindFirstChild("Data") or LocalPlayer:FindFirstChild("data")
+            if data then
+                local lvlVal = data:FindFirstChild("Level") or data:FindFirstChild("Lvl")
+                if lvlVal then
+                    level = tonumber(lvlVal.Value) or 0
+                end
+            end
+        end
+    end)
+    return level
+end
+
+-- Get the correct quest for the player's level
+local function getQuestForLevel(level)
+    for _, q in ipairs(QuestTable) do
+        if level >= q.minLvl and level <= q.maxLvl then
+            return q
+        end
+    end
+    return QuestTable[#QuestTable] -- Default to last quest
 end
 
 local function getNearestPlayer(maxDist)
@@ -396,7 +475,7 @@ AutoTab:Toggle({
                     local hrp = getHRP()
                     if not hrp then continue end
 
-                    -- Fire click / M1 remote
+                    -- Fire combat remote (safe for mobile — no VirtualInputManager)
                     pcall(function()
                         local combatRemote = ReplicatedStorage:FindFirstChild("Combat") 
                             or ReplicatedStorage:FindFirstChild("M1")
@@ -404,7 +483,6 @@ AutoTab:Toggle({
                             or ReplicatedStorage:FindFirstChild("Damage")
                         
                         if not combatRemote then
-                            -- Deep search
                             for _, v in pairs(ReplicatedStorage:GetDescendants()) do
                                 local nameL = string.lower(v.Name)
                                 if v:IsA("RemoteEvent") and (string.find(nameL, "combat") or string.find(nameL, "attack") or string.find(nameL, "m1") or string.find(nameL, "hit") or string.find(nameL, "damage")) then
@@ -417,14 +495,6 @@ AutoTab:Toggle({
                         if combatRemote and combatRemote:IsA("RemoteEvent") then
                             combatRemote:FireServer()
                         end
-                    end)
-
-                    -- Also simulate mouse click as fallback
-                    pcall(function()
-                        local vim = game:GetService("VirtualInputManager")
-                        vim:SendMouseButtonEvent(0, 0, 0, true, game, 1)
-                        task.wait(0.05)
-                        vim:SendMouseButtonEvent(0, 0, 0, false, game, 1)
                     end)
                 end
             end)
@@ -568,7 +638,7 @@ FarmTab:Toggle({
                                 local targetCF = mobRoot.CFrame * CFrame.new(0, 0, 3)
                                 hrp.CFrame = targetCF
 
-                                -- Fire combat remote
+                                -- Fire combat remote (no VirtualInputManager — mobile safe)
                                 pcall(function()
                                     for _, v in pairs(ReplicatedStorage:GetDescendants()) do
                                         local nameL = string.lower(v.Name)
@@ -577,14 +647,6 @@ FarmTab:Toggle({
                                             break
                                         end
                                     end
-                                end)
-
-                                -- Simulate click
-                                pcall(function()
-                                    local vim = game:GetService("VirtualInputManager")
-                                    vim:SendMouseButtonEvent(0, 0, 0, true, game, 1)
-                                    task.wait(0.05)
-                                    vim:SendMouseButtonEvent(0, 0, 0, false, game, 1)
                                 end)
                             end
                         end
@@ -599,11 +661,11 @@ FarmTab:Toggle({
 
 FarmTab:Toggle({
     Title = "Bring Mobs to You",
-    Desc = "Teleports all nearby mobs to your position",
+    Desc = "Teleports combat mobs only (skips quest NPCs)",
     Callback = function(state)
         State.BringMobs = state
         if state then
-            WindUI:Notify({ Title = "Bring Mobs", Content = "Pulling mobs to you!", Duration = 3 })
+            WindUI:Notify({ Title = "Bring Mobs", Content = "Pulling combat mobs to you! (Quest NPCs safe)", Duration = 3 })
             task.spawn(function()
                 while State.BringMobs do
                     task.wait(0.3)
@@ -614,6 +676,8 @@ FarmTab:Toggle({
                         if v:IsA("Humanoid") and v.Health > 0 then
                             local npcRoot = v.Parent:FindFirstChild("HumanoidRootPart")
                             if npcRoot and not Players:GetPlayerFromCharacter(v.Parent) then
+                                -- SKIP quest NPCs, shop NPCs, trainers, etc.
+                                if isQuestNPC(v.Parent) then continue end
                                 local dist = (hrp.Position - npcRoot.Position).Magnitude
                                 if dist < 300 then
                                     npcRoot.CFrame = hrp.CFrame * CFrame.new(0, 0, -5)
@@ -627,46 +691,81 @@ FarmTab:Toggle({
     end
 })
 
-FarmTab:Section({ Title = "Quest Farming" })
+FarmTab:Section({ Title = "Quest Farming (Level-Based)" })
+
+FarmTab:Paragraph({
+    Title = "Your Current Quest",
+    Content = "Press 'Detect My Level' to see which quest matches your level."
+})
+
+FarmTab:Button({
+    Title = "Detect My Level",
+    Desc = "Shows your level and the correct quest for you",
+    Callback = function()
+        local lvl = getPlayerLevel()
+        local quest = getQuestForLevel(lvl)
+        WindUI:Notify({
+            Title = "Level: " .. tostring(lvl),
+            Content = "Quest: " .. quest.questName .. "\nIsland: " .. quest.island .. "\nMob: " .. quest.mobName,
+            Duration = 8
+        })
+    end
+})
 
 FarmTab:Toggle({
-    Title = "Auto Quest (Accept & Complete)",
-    Desc = "Auto-accepts and completes quests from nearby NPCs",
+    Title = "Auto Quest (Level-Based)",
+    Desc = "Auto picks quest matching your level, TPs to NPC, accepts, farms mobs, completes",
     Callback = function(state)
         State.AutoQuest = state
         if state then
-            WindUI:Notify({ Title = "Auto Quest", Content = "Started auto-questing!", Duration = 3 })
+            local lvl = getPlayerLevel()
+            local quest = getQuestForLevel(lvl)
+            WindUI:Notify({
+                Title = "Auto Quest Started!",
+                Content = "Level " .. lvl .. " → " .. quest.questName .. " (" .. quest.island .. ")",
+                Duration = 5
+            })
             task.spawn(function()
                 while State.AutoQuest do
-                    task.wait(1)
+                    -- Re-check level each cycle in case we leveled up
+                    local currentLvl = getPlayerLevel()
+                    local currentQuest = getQuestForLevel(currentLvl)
+                    
+                    -- Step 1: Find and interact with the matching quest NPC
+                    local questNPCFound = false
                     pcall(function()
-                        -- Fire all proximity prompts on quest NPCs
                         for _, v in pairs(Workspace:GetDescendants()) do
-                            if v:IsA("ProximityPrompt") then
-                                local parentModel = v:FindFirstAncestorWhichIsA("Model")
-                                if parentModel then
-                                    local nameL = string.lower(parentModel.Name)
-                                    if string.find(nameL, "quest") or string.find(nameL, "npc") or string.find(nameL, "giver") or string.find(nameL, "hunter") then
-                                        local part = parentModel:FindFirstChildWhichIsA("BasePart")
+                            if not State.AutoQuest then break end
+                            local nameL = string.lower(v.Name)
+                            -- Check if this model name matches our quest
+                            if v:IsA("Model") and (
+                                string.find(nameL, string.lower(currentQuest.questName)) or
+                                string.find(nameL, string.lower(currentQuest.mobName)) or
+                                string.find(nameL, "quest")
+                            ) then
+                                -- Check if it has a ProximityPrompt (quest giver)
+                                for _, child in pairs(v:GetDescendants()) do
+                                    if child:IsA("ProximityPrompt") then
+                                        local part = v:FindFirstChildWhichIsA("BasePart")
                                         if part then
-                                            local hrp = getHRP()
-                                            if hrp then
-                                                local dist = (hrp.Position - part.Position).Magnitude
-                                                if dist < 50 then
-                                                    fireproximityprompt(v)
-                                                end
-                                            end
+                                            teleportTo(part.CFrame * CFrame.new(0, 0, 3))
+                                            task.wait(0.5)
+                                            pcall(function() fireproximityprompt(child) end)
+                                            questNPCFound = true
                                         end
+                                        break
                                     end
                                 end
                             end
                         end
+                    end)
 
-                        -- Also try quest-related remotes
+                    -- Step 2: Also fire quest-related remotes matching current quest
+                    pcall(function()
                         for _, v in pairs(ReplicatedStorage:GetDescendants()) do
                             if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
                                 local nameL = string.lower(v.Name)
-                                if string.find(nameL, "quest") and (string.find(nameL, "accept") or string.find(nameL, "start") or string.find(nameL, "complete")) then
+                                if string.find(nameL, "quest") then
                                     if v:IsA("RemoteEvent") then
                                         v:FireServer()
                                     end
@@ -674,6 +773,47 @@ FarmTab:Toggle({
                             end
                         end
                     end)
+
+                    -- Step 3: Farm the quest mobs
+                    for i = 1, 15 do -- Attack cycle before re-checking quest
+                        if not State.AutoQuest then break end
+                        local mob = getNearestNPC(9999, currentQuest.mobName)
+                        if mob then
+                            local mobRoot = mob.Parent:FindFirstChild("HumanoidRootPart")
+                            if mobRoot then
+                                local hrp = getHRP()
+                                if hrp then
+                                    hrp.CFrame = mobRoot.CFrame * CFrame.new(0, 0, 3)
+                                    -- Fire combat remote
+                                    pcall(function()
+                                        for _, v in pairs(ReplicatedStorage:GetDescendants()) do
+                                            local rNameL = string.lower(v.Name)
+                                            if v:IsA("RemoteEvent") and (string.find(rNameL, "combat") or string.find(rNameL, "attack") or string.find(rNameL, "m1") or string.find(rNameL, "hit")) then
+                                                v:FireServer()
+                                                break
+                                            end
+                                        end
+                                    end)
+                                end
+                            end
+                        end
+                        task.wait(0.25)
+                    end
+
+                    -- Step 4: Check if level changed (leveled up → switch quest)
+                    local newLvl = getPlayerLevel()
+                    if newLvl > currentLvl then
+                        local newQuest = getQuestForLevel(newLvl)
+                        if newQuest.questName ~= currentQuest.questName then
+                            WindUI:Notify({
+                                Title = "Level Up! → " .. tostring(newLvl),
+                                Content = "Switching to: " .. newQuest.questName .. " (" .. newQuest.island .. ")",
+                                Duration = 5
+                            })
+                        end
+                    end
+
+                    task.wait(1)
                 end
             end)
         else
